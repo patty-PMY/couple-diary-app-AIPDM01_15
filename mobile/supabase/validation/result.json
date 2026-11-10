@@ -1,0 +1,30 @@
+{
+  "status": "passed",
+  "completedAt": "2026-11-10T14:36:02.604Z",
+  "version": "PostgreSQL 17.11 on x86_64-windows, compiled by msvc-19.44.35228, 64-bit",
+  "migration": "20261110000000_init_our_days.sql",
+  "sha256": "451272bb4d06d4d61eab6cef2292ff5c36e72343cbedfbb21a1f9dee8cd909c1",
+  "checks": [
+    "確認 public schema 為空白，沒有沿用既有應用程式資料表",
+    "原始遷移檔在單一交易完整套用成功",
+    "10 張應用程式資料表均建立成功",
+    "外鍵及檢查約束均已建立且通過 PostgreSQL 驗證",
+    "4 個應用程式函式均建立成功",
+    "使用者 trigger、UUID 預設值、pgcrypto、關聯資料及所有資料表寫入成功",
+    "繁體中文及 emoji 以 UTF-8 正確往返",
+    "測試資料已 rollback，遷移後資料庫仍為空白"
+  ],
+  "smokeCounts": {
+    "anniversary_dates": 1,
+    "anniversary_reminders": 1,
+    "calendar_events": 1,
+    "couple_invitations": 1,
+    "couple_members": 2,
+    "couples": 1,
+    "diary_comments": 1,
+    "diary_entries": 1,
+    "mood_entries": 1,
+    "profiles": 2
+  },
+  "scope": "本機真實 PostgreSQL；以最小 Supabase Auth 依賴契約 bootstrap；不包含託管 Auth API、RLS 行為或裝置測試。"
+}
