@@ -1,1 +1,0 @@
-# couple-diary-app-AIPDM01_15
