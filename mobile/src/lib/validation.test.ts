@@ -1,6 +1,11 @@
-import { characterCount, daysUntil, isValidIsoDate, parseLocalDateTime, validateSignup, validateText } from './validation';
+import { characterCount, daysUntil, isValidIsoDate, parseLocalDateTime, validateEmail, validateSignup, validateText } from './validation';
 
 describe('account entry rules', () => {
+  it('accepts a valid email address and rejects malformed input', () => {
+    expect(validateEmail(' person@example.com ')).toBeNull();
+    expect(validateEmail('not-an-email')).toMatch('Email');
+  });
+
   it('requires consent, adult confirmation, and a completed test notice', () => {
     expect(validateSignup(false, true, 'ap-southeast-1', '30 days after study')).toMatch('同意');
     expect(validateSignup(true, false, 'ap-southeast-1', '30 days after study')).toMatch('18');

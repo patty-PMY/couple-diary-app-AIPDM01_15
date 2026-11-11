@@ -4,6 +4,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import { Button, Card, Field, Page } from '../components/UI';
 import { useApp } from '../context/useApp';
 import { colors } from '../lib/theme';
+import { validateEmail } from '../lib/validation';
 
 export default function WelcomeScreen() {
   const { ready, session, isPreview, configured, noticeConfigured, testDataRegion, testRetention, signIn, signUp, enterPreview } = useApp();
@@ -11,10 +12,12 @@ export default function WelcomeScreen() {
   const [consent, setConsent] = useState(false); const [adult, setAdult] = useState(false); const [busy, setBusy] = useState(false); const [message, setMessage] = useState('');
   useEffect(() => { if (ready && (session || isPreview)) router.replace('/(tabs)'); }, [ready, session, isPreview]);
   async function submit() {
-    if (!email.trim() || password.length < 8) { setMessage('請輸入有效 Email，密碼至少 8 個字元。'); return; }
+    const emailError = validateEmail(email);
+    if (emailError) { setMessage(emailError); return; }
+    if (!password || (createAccount && password.length < 8)) { setMessage(createAccount ? '密碼至少 8 個字元。' : '請輸入密碼。'); return; }
     if (createAccount && (!consent || !adult)) { setMessage('建立帳號前，請先同意資料使用說明並確認已年滿 18 歲。'); return; }
     setBusy(true); setMessage('');
-    try { if (createAccount) { await signUp(email, password); setMessage('帳號已送出。若收到驗證信，請先完成 Email 驗證，再登入。'); } else await signIn(email, password); }
+    try { if (createAccount) { await signUp(email, password, { consentAccepted: consent, adultConfirmed: adult }); setMessage('帳號已送出。若收到驗證信，請先完成 Email 驗證，再登入。'); } else await signIn(email, password); }
     catch (error) { setMessage(error instanceof Error ? error.message : '目前無法完成操作，請稍後再試。'); }
     finally { setBusy(false); }
   }
@@ -28,9 +31,9 @@ export default function WelcomeScreen() {
       <Field label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" placeholder="you@example.com" autoComplete="email" />
       <Field label="密碼" value={password} onChangeText={setPassword} secureTextEntry placeholder="至少 8 個字元" autoComplete={createAccount ? 'new-password' : 'password'} />
       {createAccount ? <View style={{ gap: 12 }}>
-        <View style={styles.notice}><Text style={styles.noticeTitle}>測試版資料使用說明</Text><Text style={styles.checkCopy}>僅供年滿 18 歲的受邀情侶試用。帳號資料用於登入；配對後，行程、重要日期、日記、留言與心情會與伴侶共享，並存放於測試版 Supabase 專案。資料區域：{testDataRegion || '尚未設定'}。保存安排：{testRetention || '尚未設定'}。預覽資料只留在本機。不要輸入敏感內容；需要移除測試資料時請聯絡測試負責人。此版本尚無自助刪除帳號功能。</Text></View>
-        <Pressable onPress={() => setConsent(!consent)} style={styles.checkRow}><Text style={styles.check}>{consent ? '✓' : ''}</Text><Text style={styles.checkCopy}>我已閱讀並同意以上資料使用說明。</Text></Pressable>
-        <Pressable onPress={() => setAdult(!adult)} style={styles.checkRow}><Text style={styles.check}>{adult ? '✓' : ''}</Text><Text style={styles.checkCopy}>我確認已年滿 18 歲。</Text></Pressable>
+        <View style={styles.notice}><Text style={styles.noticeTitle}>測試版資料使用說明（v1）</Text><Text style={styles.checkCopy}>僅供年滿 18 歲的受邀情侶試用。帳號資料用於登入，並記錄成年確認與本說明的同意版本及時間；配對後，行程、重要日期、日記、留言與心情會與伴侶共享，並存放於測試版 Supabase 專案。資料區域：{testDataRegion || '尚未設定'}。保存安排：{testRetention || '尚未設定'}。預覽資料只留在本機。不要輸入敏感內容；需要移除測試資料時請聯絡測試負責人。此版本尚無自助刪除帳號功能。</Text></View>
+        <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: consent, disabled: busy }} accessibilityLabel="我已閱讀並同意以上資料使用說明" disabled={busy} onPress={() => setConsent(!consent)} style={styles.checkRow}><Text style={styles.check}>{consent ? '✓' : ''}</Text><Text style={styles.checkCopy}>我已閱讀並同意以上資料使用說明。</Text></Pressable>
+        <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: adult, disabled: busy }} accessibilityLabel="我確認已年滿 18 歲" disabled={busy} onPress={() => setAdult(!adult)} style={styles.checkRow}><Text style={styles.check}>{adult ? '✓' : ''}</Text><Text style={styles.checkCopy}>我確認已年滿 18 歲。</Text></Pressable>
       </View> : null}
       {message ? <Text accessibilityRole="alert" style={styles.message}>{message}</Text> : null}
       {createAccount && configured && !noticeConfigured ? <Text style={styles.note}>測試負責人尚未設定資料區域與保存期間，目前先停用帳號註冊。</Text> : null}

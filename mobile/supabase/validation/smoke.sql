@@ -1,7 +1,25 @@
 -- 僅由驗證工具在交易內以資料庫管理員執行，最後 rollback。
+do $$ declare rejected boolean := false; begin
+  begin
+    insert into auth.users (id, raw_user_meta_data)
+    values ('00000000-0000-4000-8000-000000000011', '{"adult_confirmed":false,"consent_accepted":true,"consent_version":"v1"}');
+  exception when raise_exception then
+    rejected := sqlerrm = 'Adult confirmation is required';
+  end;
+  if not rejected then raise exception 'Signup without adult confirmation was accepted'; end if;
+end $$;
+do $$ declare rejected boolean := false; begin
+  begin
+    insert into auth.users (id, raw_user_meta_data)
+    values ('00000000-0000-4000-8000-000000000012', '{"adult_confirmed":true,"consent_accepted":false,"consent_version":"v1"}');
+  exception when raise_exception then
+    rejected := sqlerrm = 'Consent is required';
+  end;
+  if not rejected then raise exception 'Signup without consent was accepted'; end if;
+end $$;
 insert into auth.users (id, raw_user_meta_data) values
-  ('00000000-0000-4000-8000-000000000001', '{"adult_confirmed":true,"consent_accepted":true,"consent_version":"v1"}'),
-  ('00000000-0000-4000-8000-000000000002', '{"adult_confirmed":true,"consent_accepted":true,"consent_version":"v1"}');
+  ('00000000-0000-4000-8000-000000000001', '{"adult_confirmed":true,"consent_accepted":true,"consent_version":"v1","consent_at":"2026-11-11T00:00:00Z"}'),
+  ('00000000-0000-4000-8000-000000000002', '{"adult_confirmed":true,"consent_accepted":true,"consent_version":"v1","consent_at":"2026-11-11T00:00:00Z"}');
 insert into public.couples default values;
 insert into public.couple_members (couple_id, user_id)
   select c.id, u.id from public.couples c cross join auth.users u;

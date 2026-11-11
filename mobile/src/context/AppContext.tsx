@@ -1,13 +1,22 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { Session } from '@supabase/supabase-js';
-import React, { PropsWithChildren, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { PropsWithChildren, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState } from 'react-native';
+import { PairingStatus, pairingError, validateInvite } from '../lib/pairing';
 import { Anniversary, CalendarEvent, CoupleData, DiaryComment, DiaryEntry, MoodEntry } from '../lib/models';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import { validateEmail, validateSignup } from '../lib/validation';
 import { AppContext } from './app-context';
 
 const PREVIEW_KEY = 'our-days-preview-data-v1';
 const PREVIEW_COUPLE = 'our-days-preview-couple';
+const CONSENT_VERSION = 'v1';
+
+type SignupConfirmation = {
+  adultConfirmed: boolean;
+  consentAccepted: boolean;
+};
 
 function id() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -75,6 +84,7 @@ export type AppContextValue = {
   testDataRegion: string;
   testRetention: string;
   coupleId: string | null;
+  pairingStatus: PairingStatus;
   events: CalendarEvent[];
   anniversaries: Anniversary[];
   diaries: DiaryEntry[];
@@ -83,7 +93,7 @@ export type AppContextValue = {
   error: string | null;
   clearError: () => void;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string) => Promise<void>;
+  signUp: (email: string, password: string, confirmation: SignupConfirmation) => Promise<void>;
   signOut: () => Promise<void>;
   enterPreview: () => Promise<void>;
   createInvite: () => Promise<string>;
@@ -102,21 +112,39 @@ export function AppProvider({ children }: PropsWithChildren) {
   const [data, setData] = useState<CoupleData | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pairingStatus, setPairingStatus] = useState<PairingStatus>('loading');
+  const identity = useRef<string | null>(null);
+  const refreshVersion = useRef(0);
 
   const refresh = useCallback(async () => {
+    const owner = isPreview ? 'preview' : session?.user.id ?? null;
+    if (identity.current !== owner) return;
+    const version = ++refreshVersion.current;
+    const current = () => version === refreshVersion.current && identity.current === owner;
+    try {
     if (isPreview) {
       const saved = await AsyncStorage.getItem(PREVIEW_KEY);
-      setData(saved ? JSON.parse(saved) as CoupleData : previewSeed());
+      if (current()) { setData(saved ? JSON.parse(saved) as CoupleData : previewSeed()); setPairingStatus('paired'); }
       return;
     }
     if (!supabase || !session) {
       setData(null);
+      setPairingStatus('unpaired');
       return;
     }
-    const membership = await supabase.from('couple_members').select('couple_id').eq('user_id', session.user.id).maybeSingle();
+    const membership = await supabase.rpc('get_pairing_status').maybeSingle<{ couple_id: string; member_count: number }>();
+    if (!current()) return;
     if (membership.error) throw membership.error;
     if (!membership.data) {
       setData(null);
+      setPairingStatus('unpaired');
+      setError(null);
+      return;
+    }
+    if (Number(membership.data.member_count) !== 2) {
+      setData(null);
+      setPairingStatus('pending');
+      setError(null);
       return;
     }
     const coupleId = membership.data.couple_id as string;
@@ -129,27 +157,47 @@ export function AppProvider({ children }: PropsWithChildren) {
       supabase.from('mood_entries').select('*').eq('couple_id', coupleId).order('created_at', { ascending: false }),
     ]);
     const result = [events, anniversaries, reminders, diaries, comments, moods].find((response) => response.error);
+    if (!current()) return;
     if (result?.error) throw result.error;
     setData({
       coupleId,
       events: events.data ?? [], anniversaries: (anniversaries.data ?? []).map((row) => ({ ...row, reminder_enabled: (reminders.data ?? []).some((reminder) => reminder.anniversary_id === row.id), reminder_days_before: 1 })), diaries: diaries.data ?? [],
       comments: comments.data ?? [], moods: moods.data ?? [],
     } as CoupleData);
+    setPairingStatus('paired');
+    setError(null);
+    } catch (reason) {
+      if (!current()) return;
+      setData(null);
+      setPairingStatus('error');
+      setError('無法讀取配對狀態，請確認網路後重試。');
+      throw reason;
+    }
   }, [isPreview, session]);
 
   useEffect(() => {
     let alive = true;
+    let authRevision = 0;
     async function init() {
       if (!supabase) {
         setReady(true);
         return;
       }
-      const { data: result } = await supabase.auth.getSession();
-      if (alive) setSession(result.session);
-      setReady(true);
+      const revision = authRevision;
+      const { data: result, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+      if (alive && revision === authRevision) { identity.current = result.session?.user.id ?? null; setSession(result.session); }
+      if (alive) setReady(true);
     }
     void init().catch((reason) => { setError(reason instanceof Error ? reason.message : '無法讀取登入狀態'); setReady(true); });
     const { data: listener } = supabase?.auth.onAuthStateChange((_event, nextSession) => {
+      ++authRevision;
+      if (identity.current !== (nextSession?.user.id ?? null)) {
+        identity.current = nextSession?.user.id ?? null;
+        ++refreshVersion.current;
+        setData(null);
+        setPairingStatus(nextSession ? 'loading' : 'unpaired');
+      }
       setSession(nextSession);
       setIsPreview(false);
       setError(null);
@@ -159,7 +207,14 @@ export function AppProvider({ children }: PropsWithChildren) {
 
   useEffect(() => {
     if (!ready) return;
-    void refresh().catch((reason) => setError(reason instanceof Error ? reason.message : '讀取共享內容失敗'));
+    void refresh().catch(() => undefined);
+  }, [ready, refresh]);
+
+  useEffect(() => {
+    const listener = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && ready) void refresh().catch(() => undefined);
+    });
+    return () => listener.remove();
   }, [ready, refresh]);
 
   const persistPreview = useCallback(async (next: CoupleData) => {
@@ -168,9 +223,9 @@ export function AppProvider({ children }: PropsWithChildren) {
   }, []);
 
   const requirePair = useCallback(() => {
-    if (!data?.coupleId) throw new Error('請先完成伴侶配對。');
+    if (!data?.coupleId || pairingStatus !== 'paired' || identity.current !== (isPreview ? 'preview' : session?.user.id)) throw new Error('請先完成伴侶配對。');
     return data.coupleId;
-  }, [data?.coupleId]);
+  }, [data?.coupleId, pairingStatus, isPreview, session?.user.id]);
   const actorId = session?.user.id ?? 'you';
 
   const value = useMemo<AppContextValue>(() => ({
@@ -178,23 +233,40 @@ export function AppProvider({ children }: PropsWithChildren) {
     noticeConfigured: Boolean(process.env.EXPO_PUBLIC_TEST_DATA_REGION?.trim() && process.env.EXPO_PUBLIC_TEST_RETENTION?.trim()),
     testDataRegion: process.env.EXPO_PUBLIC_TEST_DATA_REGION?.trim() ?? '',
     testRetention: process.env.EXPO_PUBLIC_TEST_RETENTION?.trim() ?? '',
-    coupleId: data?.coupleId ?? null,
+    coupleId: data?.coupleId ?? null, pairingStatus,
     events: data?.events ?? [], anniversaries: data?.anniversaries ?? [], diaries: data?.diaries ?? [],
     comments: data?.comments ?? [], moods: data?.moods ?? [], error,
     clearError: () => setError(null),
     signIn: async (email, password) => {
       if (!supabase) throw new Error('尚未設定 Supabase。');
+      const emailError = validateEmail(email);
+      if (emailError) throw new Error(emailError);
+      if (!password) throw new Error('請輸入密碼。');
       const { error: authError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
       if (authError) throw authError;
     },
-    signUp: async (email, password) => {
+    signUp: async (email, password, confirmation) => {
       if (!supabase) throw new Error('尚未設定 Supabase。');
-      if (!process.env.EXPO_PUBLIC_TEST_DATA_REGION?.trim() || !process.env.EXPO_PUBLIC_TEST_RETENTION?.trim()) {
-        throw new Error('測試負責人尚未填寫資料存放區域與保存期間，暫時無法建立帳號。');
-      }
+      const emailError = validateEmail(email);
+      if (emailError) throw new Error(emailError);
+      if (password.length < 8) throw new Error('密碼至少 8 個字元。');
+      const signupError = validateSignup(
+        confirmation.consentAccepted,
+        confirmation.adultConfirmed,
+        process.env.EXPO_PUBLIC_TEST_DATA_REGION ?? '',
+        process.env.EXPO_PUBLIC_TEST_RETENTION ?? '',
+      );
+      if (signupError) throw new Error(signupError);
       const { error: authError } = await supabase.auth.signUp({
         email: email.trim(), password,
-        options: { data: { adult_confirmed: true, consent_accepted: true, consent_version: 'v1', consent_at: new Date().toISOString() } },
+        options: {
+          data: {
+            adult_confirmed: confirmation.adultConfirmed,
+            consent_accepted: confirmation.consentAccepted,
+            consent_version: CONSENT_VERSION,
+            consent_at: new Date().toISOString(),
+          },
+        },
       });
       if (authError) throw authError;
     },
@@ -202,30 +274,47 @@ export function AppProvider({ children }: PropsWithChildren) {
       if (isPreview) {
         setIsPreview(false);
         setData(null);
+        identity.current = null;
+        ++refreshVersion.current;
+        setPairingStatus('unpaired');
         return;
       }
-      if (supabase) await supabase.auth.signOut();
+      if (supabase) {
+        const { error: signOutError } = await supabase.auth.signOut({ scope: 'local' });
+        if (signOutError) throw new Error('登出失敗，請確認網路後再試。');
+      }
+      identity.current = null;
+      ++refreshVersion.current;
+      setSession(null); setData(null); setPairingStatus('unpaired'); setError(null);
     },
     enterPreview: async () => {
+      identity.current = 'preview';
+      ++refreshVersion.current;
       setSession(null);
       setIsPreview(true);
       const saved = await AsyncStorage.getItem(PREVIEW_KEY);
       const preview = saved ? JSON.parse(saved) as CoupleData : previewSeed();
       setData(preview);
+      setPairingStatus('paired');
       if (!saved) await AsyncStorage.setItem(PREVIEW_KEY, JSON.stringify(preview));
     },
     createInvite: async () => {
-      if (isPreview || !supabase) throw new Error('預覽模式不會建立真實配對邀請。');
+      if (isPreview || !supabase || !session) throw new Error('請先登入再建立配對邀請。');
       const { data: token, error: rpcError } = await supabase.rpc('create_couple_invite');
-      if (rpcError) throw rpcError;
-      await refresh();
+      if (rpcError) throw new Error(pairingError(rpcError));
+      if (identity.current !== session.user.id) throw new Error('帳號已切換，請重新登入後確認配對狀態。');
+      ++refreshVersion.current;
+      setData(null); setPairingStatus('pending');
       return token as string;
     },
     acceptInvite: async (token) => {
-      if (isPreview || !supabase) throw new Error('預覽模式不會加入真實配對。');
+      if (isPreview || !supabase || !session) throw new Error('請先登入再接受配對邀請。');
+      const invalid = validateInvite(token);
+      if (invalid) throw new Error(invalid);
       const { error: rpcError } = await supabase.rpc('accept_couple_invite', { invite_token: token.trim() });
-      if (rpcError) throw rpcError;
-      await refresh();
+      if (rpcError) throw new Error(pairingError(rpcError));
+      if (identity.current !== session.user.id) return;
+      try { await refresh(); } catch { throw new Error('配對已完成，但共享內容載入失敗。請重新整理配對狀態。'); }
     },
     refresh,
     createEvent: async (title, startsAt) => {
@@ -278,7 +367,7 @@ export function AppProvider({ children }: PropsWithChildren) {
       if (saveError) throw saveError;
       await refresh();
     },
-  }), [session, ready, isPreview, data, error, refresh, persistPreview, actorId, requirePair]);
+  }), [session, ready, isPreview, data, pairingStatus, error, refresh, persistPreview, actorId, requirePair]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

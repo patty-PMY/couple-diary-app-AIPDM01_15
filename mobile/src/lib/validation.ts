@@ -15,6 +15,10 @@ export function validateSignup(consent: boolean, adult: boolean, dataRegion: str
   return null;
 }
 
+export function validateEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ? null : '請輸入有效 Email。';
+}
+
 export function parseLocalDateTime(value: string) {
   const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(value.trim());
   if (!match) return null;

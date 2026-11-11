@@ -1,20 +1,23 @@
 {
   "status": "passed",
-  "completedAt": "2026-11-11T01:52:26.509Z",
+  "completedAt": "2026-11-11T02:23:51.703Z",
   "version": "PostgreSQL 17.11 on x86_64-windows, compiled by msvc-19.44.35228, 64-bit",
   "migration": [
     "20261110000000_init_our_days.sql",
-    "20261111000000_couple_data_rls.sql"
+    "20261111000000_couple_data_rls.sql",
+    "20261111010000_pairing_lifecycle.sql"
   ],
-  "sha256": "07d1cbd83ba0f56ac074cc3e199c15f03a30a602c346959717ac6477143dd471",
+  "sha256": "55e4df0f5f54ca0e864b026fc7a8bf7a2686446f50834557a7a32ced95a8847c",
   "checks": [
     "starts with an empty public schema",
     "initial and couple-scoped RLS migrations apply",
     "all expected tables exist",
     "all database constraints are validated",
     "required database functions exist",
+    "valid signups create profiles with adult confirmation and versioned consent records; incomplete signups are rejected",
     "smoke fixture transaction rolls back",
-    "paired, other-couple, unpaired, and identity-spoof RLS checks pass"
+    "paired, other-couple, unpaired, and identity-spoof RLS checks pass",
+    "invitation rotation, expiry, pending access, two-member capacity, concurrent accepts, and RPC ACLs pass"
   ],
   "smokeCounts": {
     "anniversary_dates": 1,

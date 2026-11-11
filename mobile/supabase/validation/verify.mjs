@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import { randomBytes, createHash } from 'node:crypto';
 import { cp, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -8,13 +8,17 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { initdb as packagedInitdb } from '@embedded-postgres/windows-x64';
 import pg from 'pg';
+import { tmpdir } from 'node:os';
+import { verifyPairing } from './pairing.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const migrationName = '20261110000000_init_our_days.sql';
 const rlsMigrationName = '20261111000000_couple_data_rls.sql';
 const migration = await readFile(join(root, '..', 'migrations', migrationName), 'utf8');
+const pairingMigrationName = '20261111010000_pairing_lifecycle.sql';
+const pairingMigration = await readFile(join(root, '..', 'migrations', pairingMigrationName), 'utf8');
 const rlsMigration = await readFile(join(root, '..', 'migrations', rlsMigrationName), 'utf8');
-const runDir = await mkdtemp(join('C:\\\\Users\\\\patty\\\\AppData\\\\Local\\\\Temp', 'our-days-pg-'));
+const runDir = await mkdtemp(join(tmpdir(), 'our-days-pg-'));
 const nativeDir = join(runDir, 'native');
 await cp(dirname(dirname(packagedInitdb)), nativeDir, { recursive: true });
 const initdb = join(nativeDir, 'bin', 'initdb.exe');
@@ -62,6 +66,7 @@ try {
   await client.query('begin');
   await client.query(migration);
   await client.query(rlsMigration);
+  await client.query(pairingMigration);
   await client.query('commit');
   passed('initial and couple-scoped RLS migrations apply');
 
@@ -85,6 +90,20 @@ try {
     counts[table] = (await client.query(`select count(*)::int as total from public.${table}`)).rows[0].total;
     assert.equal(counts[table], ['profiles', 'couple_members'].includes(table) ? 2 : 1, `${table} row count`);
   }
+  const profiles = await client.query(
+    `select adult_confirmed, consent_version, consent_at
+     from public.profiles
+     where id = any($1::uuid[])
+     order by id`,
+    [['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']],
+  );
+  assert.equal(profiles.rowCount, 2);
+  for (const profile of profiles.rows) {
+    assert.equal(profile.adult_confirmed, true);
+    assert.equal(profile.consent_version, 'v1');
+    assert.equal(profile.consent_at.toISOString(), '2026-11-11T00:00:00.000Z');
+  }
+  passed('valid signups create profiles with adult confirmation and versioned consent records; incomplete signups are rejected');
   await client.query('rollback');
   for (const table of expected) {
     assert.equal((await client.query(`select count(*)::int as total from public.${table}`)).rows[0].total, 0);
@@ -96,10 +115,15 @@ try {
   await client.query(await readFile(join(root, 'rls.sql'), 'utf8'));
   passed('paired, other-couple, unpaired, and identity-spoof RLS checks pass');
   await client.query('rollback');
+  await verifyPairing(client, async () => {
+    const connection = new pg.Client({ host: '127.0.0.1', port, user: 'postgres', password, database: 'postgres', connectionTimeoutMillis: 10000 });
+    await connection.connect(); return connection;
+  });
+  passed('invitation rotation, expiry, pending access, two-member capacity, concurrent accepts, and RPC ACLs pass');
   await writeFile(join(root, 'result.json'), JSON.stringify({
     status: 'passed', completedAt: new Date().toISOString(), version,
-    migration: [migrationName, rlsMigrationName],
-    sha256: createHash('sha256').update(migration + rlsMigration).digest('hex'),
+    migration: [migrationName, rlsMigrationName, pairingMigrationName],
+    sha256: createHash('sha256').update(migration + rlsMigration + pairingMigration).digest('hex'),
     checks, smokeCounts: counts,
     scope: 'Isolated PostgreSQL with Supabase Auth stubs; RLS evaluated as authenticated role.',
   }, null, 2) + '\n');
