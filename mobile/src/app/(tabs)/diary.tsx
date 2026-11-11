@@ -5,6 +5,9 @@ import { JournalEditor } from '../../components/JournalEditor';
 import { useApp } from '../../context/useApp';
 import { MoodEntry, moodOptions } from '../../lib/models';
 import { colors } from '../../lib/theme';
+import { SharedDataStatus } from '../../components/SharedDataStatus';
+import { EmptyState, LoadingState } from '../../components/Feedback';
+import { userMessage } from '../../lib/errors';
 
 type Selection = { kind: 'diary' | 'comment' | 'mood'; id: string } | null;
 function dateLabel(value: string) { return new Date(value).toLocaleString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); }
@@ -26,7 +29,7 @@ export default function DiaryScreen() {
     if (locked.current) return false;
     locked.current = true; setBusy(true); setMessage('');
     try { await action(); setMessage(success); return true; }
-    catch (reason) { setMessage(reason instanceof Error ? reason.message : '操作失敗，輸入內容已保留，請重試。'); return false; }
+    catch (reason) { setMessage(userMessage(reason, '操作失敗，輸入內容已保留，請重試。')); return false; }
     finally { locked.current = false; setBusy(false); }
   }
   async function remove() {
@@ -40,10 +43,12 @@ export default function DiaryScreen() {
 
   return <Page>
     <Heading eyebrow="OUR LITTLE JOURNAL" title="雙人日記" subtitle="分享今天的一點心情，不用每天都寫。" />
+    <SharedDataStatus />
+    {busy ? <LoadingState message="正在處理日記操作…" /> : null}
     {isPreview ? <Tag>本機預覽：內容只儲存在此裝置</Tag> : null}
-    {message || app.error ? <Text accessibilityRole="alert" style={styles.message}>{message || app.error}</Text> : null}
-    <Button variant="secondary" disabled={busy} onPress={() => run(app.refresh, '已取得最新內容。')}>重新整理日記</Button>
-    {!coupleId ? <Card><Text style={styles.title}>先完成伴侶配對</Text><Text style={styles.copy}>完成配對後，就能發布日記、留言及心情。</Text></Card> : <>
+    {message ? <Text accessibilityRole="alert" style={styles.message}>{message}</Text> : null}
+    <Button variant="secondary" disabled={busy || app.refreshing} loading={app.refreshing} onPress={() => run(app.refresh, '已取得最新內容。')}>重新整理日記</Button>
+    {!coupleId ? app.error ? <EmptyState title="日記尚未載入" message="請確認網路後重新整理，或到配對設定確認登入狀態。" /> : !app.refreshing ? <Card><Text style={styles.title}>先完成伴侶配對</Text><Text style={styles.copy}>完成配對後，就能發布日記、留言及心情。</Text></Card> : null : <>
       <Card>
         <Text style={styles.title}>寫一篇日記</Text>
         <JournalEditor label="日記內容" maximum={500} busy={busy} saveLabel="發布日記" clearAfterSave onSave={(body) => run(() => app.createDiary(body), '日記已發布。')} />
@@ -59,27 +64,28 @@ export default function DiaryScreen() {
       {sortedMoods.map((entry) => <View key={entry.id} testID={`mood-${entry.id}`}><Card>
         <Text style={styles.copy}>{author(entry.created_by)} · {dateLabel(entry.created_at)}</Text>
         <Text style={styles.title}>{moodOptions.find((mood) => mood.value === entry.mood)?.emoji} {moodOptions.find((mood) => mood.value === entry.mood)?.label}</Text>
-        {editing?.kind === 'mood' && editing.id === entry.id ? <MoodEditor key={entry.id} value={entry.mood} busy={busy} onCancel={() => setEditing(null)} onSave={async (value) => { if (await run(() => app.updateMood(entry.id, value), '心情已更新。')) setEditing(null); }} /> : <Actions busy={busy} onEdit={() => openEdit({ kind: 'mood', id: entry.id })} onDelete={() => confirmDelete({ kind: 'mood', id: entry.id })} />}
+        {editing?.kind === 'mood' && editing.id === entry.id ? <MoodEditor key={entry.id} value={entry.mood} busy={busy} onCancel={() => setEditing(null)} onSave={async (value) => { if (await run(() => app.updateMood(entry.id, value), '心情已更新。')) setEditing(null); }} /> : <Actions context={`${author(entry.created_by)}於${dateLabel(entry.created_at)}的心情`} busy={busy} onEdit={() => openEdit({ kind: 'mood', id: entry.id })} onDelete={() => confirmDelete({ kind: 'mood', id: entry.id })} />}
       </Card></View>)}
-      {!sortedMoods.length ? <Text style={styles.copy}>還沒有心情紀錄，想分享時再選一個貼紙。</Text> : null}
+      {!sortedMoods.length && !app.refreshing && !app.error ? <Text style={styles.copy}>還沒有心情紀錄，想分享時再選一個貼紙。</Text> : null}
       <Text style={styles.title}>你們的日常</Text>
       {sorted.map((entry) => <View key={entry.id} testID={`diary-${entry.id}`}><Card>
         <Text style={styles.copy}>{author(entry.created_by)} · {dateLabel(entry.created_at)}</Text>
-        {editing?.kind === 'diary' && editing.id === entry.id ? <JournalEditor label="編輯日記內容" maximum={500} initial={entry.body} busy={busy} saveLabel="儲存日記" onCancel={() => setEditing(null)} onSave={async (body) => { const saved = await run(() => app.updateDiary(entry.id, body), '日記已更新。'); if (saved) setEditing(null); return saved; }} /> : <><Text style={styles.body}>{entry.body}</Text><Actions busy={busy} onEdit={() => openEdit({ kind: 'diary', id: entry.id })} onDelete={() => confirmDelete({ kind: 'diary', id: entry.id })} /></>}
+        {editing?.kind === 'diary' && editing.id === entry.id ? <JournalEditor label="編輯日記內容" maximum={500} initial={entry.body} busy={busy} saveLabel="儲存日記" onCancel={() => setEditing(null)} onSave={async (body) => { const saved = await run(() => app.updateDiary(entry.id, body), '日記已更新。'); if (saved) setEditing(null); return saved; }} /> : <><Text style={styles.body}>{entry.body}</Text><Actions context={`${author(entry.created_by)}於${dateLabel(entry.created_at)}的日記`} busy={busy} onEdit={() => openEdit({ kind: 'diary', id: entry.id })} onDelete={() => confirmDelete({ kind: 'diary', id: entry.id })} /></>}
         <Text style={styles.title}>留言</Text>
+        {!comments.some((comment) => comment.diary_id === entry.id) ? <Text style={styles.copy}>還沒有留言，可以在下方留下第一句回應。</Text> : null}
         {comments.filter((comment) => comment.diary_id === entry.id).sort((a, b) => a.created_at.localeCompare(b.created_at)).map((comment) => <View key={comment.id} testID={`comment-${comment.id}`} style={styles.comment}>
           <Text style={styles.copy}>{author(comment.created_by)} · {dateLabel(comment.created_at)}</Text>
-          {editing?.kind === 'comment' && editing.id === comment.id ? <JournalEditor label="編輯留言內容" maximum={100} initial={comment.body} busy={busy} saveLabel="儲存留言" onCancel={() => setEditing(null)} onSave={async (body) => { const saved = await run(() => app.updateComment(comment.id, body), '留言已更新。'); if (saved) setEditing(null); return saved; }} /> : <><Text style={styles.body}>{comment.body}</Text><Actions busy={busy} onEdit={() => openEdit({ kind: 'comment', id: comment.id })} onDelete={() => confirmDelete({ kind: 'comment', id: comment.id })} /></>}
+          {editing?.kind === 'comment' && editing.id === comment.id ? <JournalEditor label="編輯留言內容" maximum={100} initial={comment.body} busy={busy} saveLabel="儲存留言" onCancel={() => setEditing(null)} onSave={async (body) => { const saved = await run(() => app.updateComment(comment.id, body), '留言已更新。'); if (saved) setEditing(null); return saved; }} /> : <><Text style={styles.body}>{comment.body}</Text><Actions context={`${author(comment.created_by)}於${dateLabel(comment.created_at)}的留言`} busy={busy} onEdit={() => openEdit({ kind: 'comment', id: comment.id })} onDelete={() => confirmDelete({ kind: 'comment', id: comment.id })} /></>}
         </View>)}
         <JournalEditor label="留言內容" maximum={100} busy={busy} saveLabel="送出留言" clearAfterSave onSave={(body) => run(() => app.createComment(entry.id, body), '留言已送出。')} />
       </Card></View>)}
-      {!sorted.length ? <Card><Text style={styles.title}>故事從第一篇開始</Text><Text style={styles.copy}>在上方寫下第一篇日記，想分享時再留下內容。</Text></Card> : null}
+      {!sorted.length && !app.refreshing && !app.error ? <Card><Text style={styles.title}>故事從第一篇開始</Text><Text style={styles.copy}>在上方寫下第一篇日記，想分享時再留下內容。</Text></Card> : null}
     </>}
   </Page>;
 }
 
-function Actions({ busy, onEdit, onDelete }: { busy: boolean; onEdit: () => void; onDelete: () => void }) {
-  return <View style={styles.actions}><Button variant="secondary" disabled={busy} onPress={onEdit}>編輯</Button><Button variant="quiet" disabled={busy} onPress={onDelete}>刪除</Button></View>;
+function Actions({ context, busy, onEdit, onDelete }: { context: string; busy: boolean; onEdit: () => void; onDelete: () => void }) {
+  return <View style={styles.actions}><Button variant="secondary" disabled={busy} accessibilityLabel={`編輯${context}`} onPress={onEdit}>編輯</Button><Button variant="quiet" disabled={busy} accessibilityLabel={`刪除${context}`} onPress={onDelete}>刪除</Button></View>;
 }
 function MoodPicker({ value, disabled, onChange }: { value: MoodEntry['mood'] | null; disabled: boolean; onChange: (value: MoodEntry['mood']) => void }) {
   return <View style={styles.moods}>{moodOptions.map((mood) => <Pressable key={mood.value} accessibilityRole="radio" accessibilityLabel={`心情：${mood.label}`} accessibilityState={{ checked: value === mood.value, disabled }} disabled={disabled} onPress={() => onChange(mood.value)} style={[styles.mood, value === mood.value && styles.selected]}><Text style={styles.emoji}>{mood.emoji}</Text><Text style={styles.copy}>{mood.label}</Text></Pressable>)}</View>;

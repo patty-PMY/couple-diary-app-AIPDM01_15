@@ -21,7 +21,7 @@ export function JournalEditor({ label, maximum, initial = '', busy, saveLabel, o
     <Field label={label} value={body} editable={!busy} onChangeText={(value) => { setBody(value); setError(''); }} multiline numberOfLines={maximum === 500 ? 5 : 2} textAlignVertical="top" inputStyle={maximum === 500 ? styles.diaryInput : styles.commentInput} />
     <Text style={[styles.count, count > maximum && styles.error]}>{count} / {maximum} 字 · {count > maximum ? `超出 ${count - maximum} 字` : `還可輸入 ${maximum - count} 字`}</Text>
     {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
-    <Button disabled={busy} onPress={save}>{busy ? '處理中…' : saveLabel}</Button>
+    <Button disabled={busy} loading={busy} onPress={save}>{busy ? '處理中…' : saveLabel}</Button>
     {onCancel ? <Button variant="secondary" disabled={busy} onPress={onCancel}>取消編輯</Button> : null}
   </View>;
 }

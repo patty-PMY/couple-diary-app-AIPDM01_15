@@ -1,6 +1,6 @@
 {
   "status": "passed",
-  "completedAt": "2026-11-11T03:56:44.341Z",
+  "completedAt": "2026-11-11T05:04:02.937Z",
   "version": "PostgreSQL 17.11 on x86_64-windows, compiled by msvc-19.44.35228, 64-bit",
   "migration": [
     "20261110000000_init_our_days.sql",
@@ -9,9 +9,10 @@
     "20261111020000_calendar_management.sql",
     "20261111030000_anniversary_management.sql",
     "20261111040000_annual_push_reminders.sql",
-    "20261111050000_journal_management.sql"
+    "20261111050000_journal_management.sql",
+    "20261111060000_input_policy_review.sql"
   ],
-  "sha256": "f48110992543b22286829d947ea0759c2116a5dcd2ea5ad04cff287440094353",
+  "sha256": "744397a399a6063c3f6222ad406be2c2d30d103d06a5b9e32d4e3d27a13b98ca",
   "checks": [
     "starts with an empty public schema",
     "initial and couple-scoped RLS migrations apply",
@@ -25,6 +26,7 @@
     "anniversary CRUD, atomic reminder creation, personal reminder isolation, cascade deletion, invalid input, and unpaired/cross-couple denial pass",
     "server annual recurrence across unopened years, timezone/DST/leap-year calculations, deduplication, leases, cancellation, and device/RPC authorization pass",
     "journal CRUD, Unicode text boundaries/whitespace, immutable authors/parents, valid moods, comment cascade, and cross-couple/unpaired isolation pass",
+    "complete policy CRUD matrix, Unicode shared titles, immutable identities, parent relations and client ACL review pass",
     "invitation rotation, expiry, pending access, two-member capacity, concurrent accepts, and RPC ACLs pass"
   ],
   "smokeCounts": {

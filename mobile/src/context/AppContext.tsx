@@ -12,6 +12,7 @@ import { validateAnniversary } from '../lib/anniversaries';
 import { requestReminderPermission, syncReminders } from '../lib/reminders';
 import { registerAnnualPushDevice, unregisterAnnualPushDevice } from '../lib/annual-push';
 import { applyJournalChange, JournalOperation, JournalRecord, JournalTable, validateMood } from '../lib/journal';
+import { userMessage } from '../lib/errors';
 
 const PREVIEW_KEY = 'our-days-preview-data-v1';
 const PREVIEW_COUPLE = 'our-days-preview-couple';
@@ -60,6 +61,8 @@ function previewSeed(): CoupleData {
 export type AppContextValue = {
   session: Session | null;
   ready: boolean;
+  refreshing: boolean;
+  retrySession: () => Promise<void>;
   isPreview: boolean;
   configured: boolean;
   noticeConfigured: boolean;
@@ -75,7 +78,7 @@ export type AppContextValue = {
   error: string | null;
   clearError: () => void;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string, confirmation: SignupConfirmation) => Promise<void>;
+  signUp: (email: string, password: string, confirmation: SignupConfirmation) => Promise<'signed_in' | 'verify_email'>;
   signOut: () => Promise<void>;
   enterPreview: () => Promise<void>;
   createInvite: () => Promise<string>;
@@ -105,22 +108,30 @@ export function AppProvider({ children }: PropsWithChildren) {
   const [isPreview, setIsPreview] = useState(false);
   const [data, setData] = useState<CoupleData | null>(null);
   const [ready, setReady] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reminderNotice, setReminderNotice] = useState<string | null>(null);
   const [pairingStatus, setPairingStatus] = useState<PairingStatus>('loading');
   const identity = useRef<string | null>(null);
   const refreshVersion = useRef(0);
   const pushSuspended = useRef(false);
+  const refreshBusyVersion = useRef(0);
+  const sessionRevision = useRef(0);
+  const dataSnapshot = useRef(data);
+  dataSnapshot.current = data;
 
   const refresh = useCallback(async () => {
     const owner = isPreview ? 'preview' : session?.user.id ?? null;
     if (identity.current !== owner) return;
     const version = ++refreshVersion.current;
+    refreshBusyVersion.current = version;
+    setRefreshing(true);
     const current = () => version === refreshVersion.current && identity.current === owner;
+    let resolvedCoupleId: string | undefined;
     try {
     if (isPreview) {
       const saved = await AsyncStorage.getItem(PREVIEW_KEY);
-      if (current()) { setData(saved ? JSON.parse(saved) as CoupleData : previewSeed()); setPairingStatus('paired'); }
+      if (current()) { setData(saved ? JSON.parse(saved) as CoupleData : previewSeed()); setPairingStatus('paired'); setError(null); }
       return;
     }
     if (!supabase || !session) {
@@ -144,6 +155,7 @@ export function AppProvider({ children }: PropsWithChildren) {
       return;
     }
     const coupleId = membership.data.couple_id as string;
+    resolvedCoupleId = coupleId;
     const [events, anniversaries, reminders, diaries, comments, moods] = await Promise.all([
       supabase.from('calendar_events').select('*').eq('couple_id', coupleId).order('starts_at', { ascending: true }),
       supabase.from('anniversary_dates').select('*').eq('couple_id', coupleId).order('event_date', { ascending: true }),
@@ -167,30 +179,51 @@ export function AppProvider({ children }: PropsWithChildren) {
     setError(null);
     } catch (reason) {
       if (!current()) return;
-      setData(null);
-      setPairingStatus('error');
-      setError('無法讀取配對狀態，請確認網路後重試。');
+      if (!dataSnapshot.current?.coupleId || (resolvedCoupleId !== undefined && resolvedCoupleId !== dataSnapshot.current.coupleId)) {
+        setData(null);
+        setPairingStatus('error');
+      }
+      setError(userMessage(reason, '無法更新共享內容。請確認網路後重新整理；畫面上的資料可能不是最新版本。'));
       throw reason;
+    } finally {
+      if (refreshBusyVersion.current === version) setRefreshing(false);
     }
   }, [isPreview, session]);
 
+  const retrySession = useCallback(async () => {
+    if (!supabase) return;
+    const revision = sessionRevision.current;
+    setReady(false);
+    try {
+      const { data: result, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+      if (revision !== sessionRevision.current) return;
+      if (identity.current !== (result.session?.user.id ?? null)) { ++refreshVersion.current; setData(null); }
+      identity.current = result.session?.user.id ?? null;
+      setSession(result.session); setError(null);
+      setPairingStatus(result.session ? 'loading' : 'unpaired');
+    } catch (reason) {
+      if (revision === sessionRevision.current) setError(userMessage(reason, '無法讀取登入狀態，請重試或重新登入。'));
+      throw reason;
+    } finally { setReady(true); }
+  }, []);
+
   useEffect(() => {
     let alive = true;
-    let authRevision = 0;
     async function init() {
       if (!supabase) {
         setReady(true);
         return;
       }
-      const revision = authRevision;
+      const revision = sessionRevision.current;
       const { data: result, error: sessionError } = await supabase.auth.getSession();
       if (sessionError) throw sessionError;
-      if (alive && revision === authRevision) { identity.current = result.session?.user.id ?? null; setSession(result.session); }
+      if (alive && revision === sessionRevision.current) { identity.current = result.session?.user.id ?? null; setSession(result.session); }
       if (alive) setReady(true);
     }
-    void init().catch((reason) => { setError(reason instanceof Error ? reason.message : '無法讀取登入狀態'); setReady(true); });
+    void init().catch((reason) => { if (alive) { setError(userMessage(reason, '無法讀取登入狀態，請重試或重新登入。')); setReady(true); } });
     const { data: listener } = supabase?.auth.onAuthStateChange((_event, nextSession) => {
-      ++authRevision;
+      ++sessionRevision.current;
       if (identity.current !== (nextSession?.user.id ?? null)) {
         void syncReminders(nextSession?.user.id ?? null, nextSession ? null : []).catch(() => setReminderNotice('無法清除舊帳號的通知，請關閉系統通知並重新登入後重試。'));
         identity.current = nextSession?.user.id ?? null;
@@ -266,14 +299,14 @@ export function AppProvider({ children }: PropsWithChildren) {
       : operation === 'update'
         ? await query.update(changes).eq('id', recordId!).eq('couple_id', coupleId).select('*').single()
         : await query.delete().eq('id', recordId!).eq('couple_id', coupleId).select('*').single();
-    if (response.error || !response.data) throw new Error('內容儲存失敗，請確認網路、配對狀態及內容是否仍存在後重試。');
+    if (response.error || !response.data) throw new Error(userMessage(response.error, operation === 'delete' ? '刪除未完成，請重新整理確認內容仍存在後重試。' : '內容尚未儲存，請確認網路後重試；輸入已保留。'));
     if (identity.current !== actorId) return;
     ++refreshVersion.current;
     setData((current) => current?.coupleId === coupleId ? applyJournalChange(current, table, operation, response.data as JournalRecord) : current);
   }, [actorId, data, isPreview, persistPreview, requirePair]);
 
   const value = useMemo<AppContextValue>(() => ({
-    session, ready, isPreview, configured: isSupabaseConfigured,
+    session, ready, refreshing, retrySession, isPreview, configured: isSupabaseConfigured,
     noticeConfigured: Boolean(process.env.EXPO_PUBLIC_TEST_DATA_REGION?.trim() && process.env.EXPO_PUBLIC_TEST_RETENTION?.trim()),
     testDataRegion: process.env.EXPO_PUBLIC_TEST_DATA_REGION?.trim() ?? '',
     testRetention: process.env.EXPO_PUBLIC_TEST_RETENTION?.trim() ?? '',
@@ -287,7 +320,7 @@ export function AppProvider({ children }: PropsWithChildren) {
       if (emailError) throw new Error(emailError);
       if (!password) throw new Error('請輸入密碼。');
       const { error: authError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-      if (authError) throw authError;
+      if (authError) throw new Error(userMessage(authError, '登入失敗，請稍後重試。'));
     },
     signUp: async (email, password, confirmation) => {
       if (!supabase) throw new Error('尚未設定 Supabase。');
@@ -301,7 +334,7 @@ export function AppProvider({ children }: PropsWithChildren) {
         process.env.EXPO_PUBLIC_TEST_RETENTION ?? '',
       );
       if (signupError) throw new Error(signupError);
-      const { error: authError } = await supabase.auth.signUp({
+      const { data: authData, error: authError } = await supabase.auth.signUp({
         email: email.trim(), password,
         options: {
           data: {
@@ -312,7 +345,8 @@ export function AppProvider({ children }: PropsWithChildren) {
           },
         },
       });
-      if (authError) throw authError;
+      if (authError) throw new Error(userMessage(authError, '註冊未完成，請稍後重試；輸入已保留。'));
+      return authData.session ? 'signed_in' : 'verify_email';
     },
     signOut: async () => {
       pushSuspended.current = true;
@@ -325,6 +359,7 @@ export function AppProvider({ children }: PropsWithChildren) {
         identity.current = null;
         ++refreshVersion.current;
         setPairingStatus('unpaired');
+        setError(null);
         return;
       }
       if (supabase) {
@@ -337,15 +372,19 @@ export function AppProvider({ children }: PropsWithChildren) {
       } catch (reason) { pushSuspended.current = false; throw reason; }
     },
     enterPreview: async () => {
+      const previousOwner = identity.current;
+      const revision = sessionRevision.current;
+      const saved = await AsyncStorage.getItem(PREVIEW_KEY);
+      const preview = saved ? JSON.parse(saved) as CoupleData : previewSeed();
+      if (!saved) await AsyncStorage.setItem(PREVIEW_KEY, JSON.stringify(preview));
+      if (identity.current !== previousOwner || revision !== sessionRevision.current) throw new Error('帳號狀態已變更，請重新開啟預覽。');
       identity.current = 'preview';
       ++refreshVersion.current;
       setSession(null);
       setIsPreview(true);
-      const saved = await AsyncStorage.getItem(PREVIEW_KEY);
-      const preview = saved ? JSON.parse(saved) as CoupleData : previewSeed();
       setData(preview);
       setPairingStatus('paired');
-      if (!saved) await AsyncStorage.setItem(PREVIEW_KEY, JSON.stringify(preview));
+      setError(null);
     },
     createInvite: async () => {
       if (isPreview || !supabase || !session) throw new Error('請先登入再建立配對邀請。');
@@ -373,9 +412,11 @@ export function AppProvider({ children }: PropsWithChildren) {
       const record = { id: id(), couple_id: coupleId, created_by: actorId, title: title.trim(), starts_at: new Date(startsAt).toISOString(), ends_at: null, timezone, created_at: new Date().toISOString() };
       if (isPreview) return persistPreview({ ...data!, events: [...data!.events, record].sort((a, b) => a.starts_at.localeCompare(b.starts_at)) });
       if (!supabase) throw new Error('尚未連接資料服務。');
-      const { error: saveError } = await supabase.from('calendar_events').insert({ ...record, id: undefined });
-      if (saveError) throw saveError;
-      await refresh();
+      const { data: saved, error: saveError } = await supabase.from('calendar_events').insert({ ...record, id: undefined }).select('*').single();
+      if (saveError || !saved) throw new Error(userMessage(saveError, '行程尚未儲存，請確認網路後重試；輸入已保留。'));
+      if (identity.current !== actorId) return;
+      ++refreshVersion.current;
+      setData((current) => current?.coupleId === coupleId ? { ...current, events: [...current.events, saved].sort((a, b) => a.starts_at.localeCompare(b.starts_at)) } : current);
     },
     updateEvent: async (eventId, title, startsAt, timezone) => {
       const coupleId = requirePair();
@@ -385,17 +426,21 @@ export function AppProvider({ children }: PropsWithChildren) {
       const changes = { title: title.trim(), starts_at: new Date(startsAt).toISOString(), timezone };
       if (isPreview) return persistPreview({ ...data!, events: data!.events.map((event) => event.id === eventId ? { ...event, ...changes } : event) });
       if (!supabase) throw new Error('尚未連接資料服務。');
-      const { data: saved, error: saveError } = await supabase.from('calendar_events').update(changes).eq('id', eventId).eq('couple_id', coupleId).select('id').single();
-      if (saveError || !saved) throw new Error('無法更新行程，請確認網路及配對狀態後重試。');
-      await refresh();
+      const { data: saved, error: saveError } = await supabase.from('calendar_events').update(changes).eq('id', eventId).eq('couple_id', coupleId).select('*').single();
+      if (saveError || !saved) throw new Error(userMessage(saveError, '行程尚未更新，請重新整理確認內容仍存在後重試。'));
+      if (identity.current !== actorId) return;
+      ++refreshVersion.current;
+      setData((current) => current?.coupleId === coupleId ? { ...current, events: current.events.map((event) => event.id === eventId ? saved : event).sort((a, b) => a.starts_at.localeCompare(b.starts_at)) } : current);
     },
     deleteEvent: async (eventId) => {
       const coupleId = requirePair();
       if (isPreview) return persistPreview({ ...data!, events: data!.events.filter((event) => event.id !== eventId) });
       if (!supabase) throw new Error('尚未連接資料服務。');
       const { data: deleted, error: deleteError } = await supabase.from('calendar_events').delete().eq('id', eventId).eq('couple_id', coupleId).select('id').single();
-      if (deleteError || !deleted) throw new Error('無法刪除行程，請確認網路及配對狀態後重試。');
-      await refresh();
+      if (deleteError || !deleted) throw new Error(userMessage(deleteError, '刪除行程未完成，請重新整理確認內容仍存在後重試。'));
+      if (identity.current !== actorId) return;
+      ++refreshVersion.current;
+      setData((current) => current?.coupleId === coupleId ? { ...current, events: current.events.filter((event) => event.id !== eventId) } : current);
     },
     createAnniversary: async (title, eventDate, repeatsYearly, reminderEnabled) => {
       const coupleId = requirePair();
@@ -411,8 +456,9 @@ export function AppProvider({ children }: PropsWithChildren) {
       }
       requirePair();
       const { data: saved, error: saveError } = await supabase.rpc('create_anniversary', { date_title: title.trim(), date_value: eventDate, yearly: repeatsYearly, remind: reminderEnabled });
-      if (saveError || !saved) throw new Error('儲存日期失敗，請確認網路及資料庫遷移後重試。');
+      if (saveError || !saved) throw new Error(userMessage(saveError, '日期尚未儲存，請確認網路後重試；若持續失敗，請聯絡測試負責人。'));
       if (identity.current !== actorId) return;
+      ++refreshVersion.current;
       setData((current) => current?.coupleId === coupleId ? { ...current, anniversaries: [...current.anniversaries, { ...saved, reminder_enabled: reminderEnabled, reminder_days_before: 1 } as Anniversary] } : current);
     },
     updateAnniversary: async (anniversaryId, title, eventDate, repeatsYearly) => {
@@ -426,8 +472,9 @@ export function AppProvider({ children }: PropsWithChildren) {
       if (repeatsYearly && data?.anniversaries.find((item) => item.id === anniversaryId)?.reminder_enabled) await registerAnnualPushDevice(actorId, true);
       requirePair();
       const { data: saved, error: saveError } = await supabase.from('anniversary_dates').update(changes).eq('id', anniversaryId).eq('couple_id', coupleId).select('*').single();
-      if (saveError || !saved) throw new Error('更新日期失敗，請重新整理確認日期仍存在後再試。');
+      if (saveError || !saved) throw new Error(userMessage(saveError, '日期尚未更新，請重新整理確認內容仍存在後重試。'));
       if (identity.current !== actorId) return;
+      ++refreshVersion.current;
       setData((current) => current?.coupleId === coupleId ? { ...current, anniversaries: current.anniversaries.map((item) => item.id === anniversaryId ? { ...item, ...saved } : item) } : current);
     },
     deleteAnniversary: async (anniversaryId) => {
@@ -435,8 +482,9 @@ export function AppProvider({ children }: PropsWithChildren) {
       if (isPreview) return persistPreview({ ...data!, anniversaries: data!.anniversaries.filter((item) => item.id !== anniversaryId) });
       if (!supabase) throw new Error('尚未連接資料服務。');
       const { data: deleted, error: deleteError } = await supabase.from('anniversary_dates').delete().eq('id', anniversaryId).eq('couple_id', coupleId).select('id').single();
-      if (deleteError || !deleted) throw new Error('刪除日期失敗，請重新整理確認日期仍存在後再試。');
+      if (deleteError || !deleted) throw new Error(userMessage(deleteError, '刪除日期未完成，請重新整理確認內容仍存在後重試。'));
       if (identity.current !== actorId) return;
+      ++refreshVersion.current;
       setData((current) => current?.coupleId === coupleId ? { ...current, anniversaries: current.anniversaries.filter((item) => item.id !== anniversaryId) } : current);
     },
     setAnniversaryReminder: async (anniversaryId, enabled, daysBefore) => {
@@ -452,8 +500,9 @@ export function AppProvider({ children }: PropsWithChildren) {
       const response = enabled
         ? await supabase.from('anniversary_reminders').upsert({ anniversary_id: anniversaryId, couple_id: coupleId, user_id: actorId, days_before: daysBefore }, { onConflict: 'anniversary_id,user_id' }).select('id').single()
         : await supabase.from('anniversary_reminders').delete().eq('anniversary_id', anniversaryId).eq('couple_id', coupleId).eq('user_id', actorId);
-      if (response.error) throw new Error('更新提醒失敗，請確認網路後重試。');
+      if (response.error) throw new Error(userMessage(response.error, '提醒尚未更新，請確認網路後重試。'));
       if (identity.current !== actorId) return;
+      ++refreshVersion.current;
       setData((current) => current?.coupleId === coupleId ? { ...current, anniversaries: current.anniversaries.map((item) => item.id === anniversaryId ? { ...item, ...changes } : item) } : current);
     },
     createDiary: (body) => mutateJournal('diary_entries', 'create', null, { body }),
@@ -465,7 +514,7 @@ export function AppProvider({ children }: PropsWithChildren) {
     createMood: (mood) => mutateJournal('mood_entries', 'create', null, { mood }),
     updateMood: (moodId, mood) => mutateJournal('mood_entries', 'update', moodId, { mood }),
     deleteMood: (moodId) => mutateJournal('mood_entries', 'delete', moodId, {}),
-  }), [session, ready, isPreview, data, pairingStatus, error, reminderNotice, refresh, persistPreview, actorId, requirePair, mutateJournal]);
+  }), [session, ready, refreshing, retrySession, isPreview, data, pairingStatus, error, reminderNotice, refresh, persistPreview, actorId, requirePair, mutateJournal]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

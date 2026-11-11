@@ -10,6 +10,7 @@ import { initdb as packagedInitdb } from '@embedded-postgres/windows-x64';
 import pg from 'pg';
 import { tmpdir } from 'node:os';
 import { verifyPairing } from './pairing.mjs';
+import { verifyPolicyReview } from './policy-review.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const migrationName = '20261110000000_init_our_days.sql';
@@ -26,6 +27,8 @@ const annualMigrationName = '20261111040000_annual_push_reminders.sql';
 const annualMigration = await readFile(join(root, '..', 'migrations', annualMigrationName), 'utf8');
 const journalMigrationName = '20261111050000_journal_management.sql';
 const journalMigration = await readFile(join(root, '..', 'migrations', journalMigrationName), 'utf8');
+const reviewMigrationName = '20261111060000_input_policy_review.sql';
+const reviewMigration = await readFile(join(root, '..', 'migrations', reviewMigrationName), 'utf8');
 const runDir = await mkdtemp(join(tmpdir(), 'our-days-pg-'));
 const nativeDir = join(runDir, 'native');
 await cp(dirname(dirname(packagedInitdb)), nativeDir, { recursive: true });
@@ -79,6 +82,7 @@ try {
   await client.query(anniversaryMigration);
   await client.query(annualMigration);
   await client.query(journalMigration);
+  await client.query(reviewMigration);
   await client.query('commit');
   passed('initial and couple-scoped RLS migrations apply');
 
@@ -147,6 +151,10 @@ try {
   await client.query(await readFile(join(root, 'journal.sql'), 'utf8'));
   passed('journal CRUD, Unicode text boundaries/whitespace, immutable authors/parents, valid moods, comment cascade, and cross-couple/unpaired isolation pass');
   await client.query('rollback');
+  await client.query('begin');
+  await verifyPolicyReview(client);
+  await client.query('rollback');
+  passed('complete policy CRUD matrix, Unicode shared titles, immutable identities, parent relations and client ACL review pass');
   await verifyPairing(client, async () => {
     const connection = new pg.Client({ host: '127.0.0.1', port, user: 'postgres', password, database: 'postgres', connectionTimeoutMillis: 10000 });
     await connection.connect(); return connection;
@@ -154,8 +162,8 @@ try {
   passed('invitation rotation, expiry, pending access, two-member capacity, concurrent accepts, and RPC ACLs pass');
   await writeFile(join(root, 'result.json'), JSON.stringify({
     status: 'passed', completedAt: new Date().toISOString(), version,
-    migration: [migrationName, rlsMigrationName, pairingMigrationName, calendarMigrationName, anniversaryMigrationName, annualMigrationName, journalMigrationName],
-    sha256: createHash('sha256').update(migration + rlsMigration + pairingMigration + calendarMigration + anniversaryMigration + annualMigration + journalMigration).digest('hex'),
+    migration: [migrationName, rlsMigrationName, pairingMigrationName, calendarMigrationName, anniversaryMigrationName, annualMigrationName, journalMigrationName, reviewMigrationName],
+    sha256: createHash('sha256').update(migration + rlsMigration + pairingMigration + calendarMigration + anniversaryMigration + annualMigration + journalMigration + reviewMigration).digest('hex'),
     checks, smokeCounts: counts,
     scope: 'Isolated PostgreSQL with Supabase Auth stubs; RLS evaluated as authenticated role.',
   }, null, 2) + '\n');
