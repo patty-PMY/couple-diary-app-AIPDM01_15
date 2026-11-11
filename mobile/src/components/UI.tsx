@@ -1,5 +1,5 @@
 import React, { PropsWithChildren } from 'react';
-import { Pressable, PressableProps, ScrollView, StyleProp, StyleSheet, Text, TextInput, TextInputProps, View, ViewStyle } from 'react-native';
+import { Pressable, PressableProps, ScrollView, StyleProp, StyleSheet, Text, TextInput, TextInputProps, TextStyle, View, ViewStyle } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors } from '../lib/theme';
 
@@ -13,8 +13,8 @@ export function Card({ children, style }: PropsWithChildren<{ style?: StyleProp<
 export function Button({ children, variant = 'primary', style, ...props }: PressableProps & { children: React.ReactNode; variant?: 'primary' | 'secondary' | 'quiet'; style?: StyleProp<ViewStyle> }) {
   return <Pressable accessibilityRole="button" style={({ pressed }) => [styles.button, styles[`button_${variant}`], pressed && styles.pressed, style]} {...props}><Text style={[styles.buttonText, variant !== 'primary' && styles.buttonTextSecondary]}>{children}</Text></Pressable>;
 }
-export function Field({ label, helper, style, ...props }: TextInputProps & { label: string; helper?: string; style?: StyleProp<ViewStyle> }) {
-  return <View style={[styles.fieldWrap, style]}><Text style={styles.label}>{label}</Text><TextInput placeholderTextColor={colors.muted} style={styles.input} {...props} />{helper ? <Text style={styles.helper}>{helper}</Text> : null}</View>;
+export function Field({ label, helper, style, inputStyle, ...props }: Omit<TextInputProps, 'style'> & { label: string; helper?: string; style?: StyleProp<ViewStyle>; inputStyle?: StyleProp<TextStyle> }) {
+  return <View style={[styles.fieldWrap, style]}><Text style={styles.label}>{label}</Text><TextInput accessibilityLabel={label} placeholderTextColor={colors.muted} style={[styles.input, inputStyle]} {...props} />{helper ? <Text style={styles.helper}>{helper}</Text> : null}</View>;
 }
 export function Tag({ children }: PropsWithChildren) { return <View style={styles.tag}><Text style={styles.tagText}>{children}</Text></View>; }
 

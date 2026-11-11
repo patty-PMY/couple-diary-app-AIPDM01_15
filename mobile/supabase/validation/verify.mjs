@@ -18,6 +18,14 @@ const migration = await readFile(join(root, '..', 'migrations', migrationName), 
 const pairingMigrationName = '20261111010000_pairing_lifecycle.sql';
 const pairingMigration = await readFile(join(root, '..', 'migrations', pairingMigrationName), 'utf8');
 const rlsMigration = await readFile(join(root, '..', 'migrations', rlsMigrationName), 'utf8');
+const calendarMigrationName = '20261111020000_calendar_management.sql';
+const calendarMigration = await readFile(join(root, '..', 'migrations', calendarMigrationName), 'utf8');
+const anniversaryMigrationName = '20261111030000_anniversary_management.sql';
+const anniversaryMigration = await readFile(join(root, '..', 'migrations', anniversaryMigrationName), 'utf8');
+const annualMigrationName = '20261111040000_annual_push_reminders.sql';
+const annualMigration = await readFile(join(root, '..', 'migrations', annualMigrationName), 'utf8');
+const journalMigrationName = '20261111050000_journal_management.sql';
+const journalMigration = await readFile(join(root, '..', 'migrations', journalMigrationName), 'utf8');
 const runDir = await mkdtemp(join(tmpdir(), 'our-days-pg-'));
 const nativeDir = join(runDir, 'native');
 await cp(dirname(dirname(packagedInitdb)), nativeDir, { recursive: true });
@@ -67,10 +75,14 @@ try {
   await client.query(migration);
   await client.query(rlsMigration);
   await client.query(pairingMigration);
+  await client.query(calendarMigration);
+  await client.query(anniversaryMigration);
+  await client.query(annualMigration);
+  await client.query(journalMigration);
   await client.query('commit');
   passed('initial and couple-scoped RLS migrations apply');
 
-  const expected = ['profiles', 'couples', 'couple_members', 'couple_invitations', 'calendar_events', 'anniversary_dates', 'anniversary_reminders', 'diary_entries', 'diary_comments', 'mood_entries'].sort();
+  const expected = ['profiles', 'couples', 'couple_members', 'couple_invitations', 'calendar_events', 'anniversary_dates', 'anniversary_reminders', 'diary_entries', 'diary_comments', 'mood_entries', 'reminder_devices', 'annual_reminder_deliveries'].sort();
   const tables = await client.query("select tablename from pg_tables where schemaname = 'public' order by tablename");
   assert.deepEqual(tables.rows.map(row => row.tablename), expected);
   passed('all expected tables exist');
@@ -88,7 +100,7 @@ try {
   const counts = {};
   for (const table of expected) {
     counts[table] = (await client.query(`select count(*)::int as total from public.${table}`)).rows[0].total;
-    assert.equal(counts[table], ['profiles', 'couple_members'].includes(table) ? 2 : 1, `${table} row count`);
+    assert.equal(counts[table], ['reminder_devices', 'annual_reminder_deliveries'].includes(table) ? 0 : ['profiles', 'couple_members'].includes(table) ? 2 : 1, `${table} row count`);
   }
   const profiles = await client.query(
     `select adult_confirmed, consent_version, consent_at
@@ -115,6 +127,26 @@ try {
   await client.query(await readFile(join(root, 'rls.sql'), 'utf8'));
   passed('paired, other-couple, unpaired, and identity-spoof RLS checks pass');
   await client.query('rollback');
+  await client.query('begin');
+  await client.query(await readFile(join(root, 'smoke.sql'), 'utf8'));
+  await client.query(await readFile(join(root, 'calendar.sql'), 'utf8'));
+  passed('partner calendar update/delete, immutable creator, timezone validation, and cross-couple isolation pass');
+  await client.query('rollback');
+  await client.query('begin');
+  await client.query(await readFile(join(root, 'smoke.sql'), 'utf8'));
+  await client.query(await readFile(join(root, 'anniversaries.sql'), 'utf8'));
+  passed('anniversary CRUD, atomic reminder creation, personal reminder isolation, cascade deletion, invalid input, and unpaired/cross-couple denial pass');
+  await client.query('rollback');
+  await client.query('begin');
+  await client.query(await readFile(join(root, 'smoke.sql'), 'utf8'));
+  await client.query(await readFile(join(root, 'annual-reminders.sql'), 'utf8'));
+  passed('server annual recurrence across unopened years, timezone/DST/leap-year calculations, deduplication, leases, cancellation, and device/RPC authorization pass');
+  await client.query('rollback');
+  await client.query('begin');
+  await client.query(await readFile(join(root, 'smoke.sql'), 'utf8'));
+  await client.query(await readFile(join(root, 'journal.sql'), 'utf8'));
+  passed('journal CRUD, Unicode text boundaries/whitespace, immutable authors/parents, valid moods, comment cascade, and cross-couple/unpaired isolation pass');
+  await client.query('rollback');
   await verifyPairing(client, async () => {
     const connection = new pg.Client({ host: '127.0.0.1', port, user: 'postgres', password, database: 'postgres', connectionTimeoutMillis: 10000 });
     await connection.connect(); return connection;
@@ -122,8 +154,8 @@ try {
   passed('invitation rotation, expiry, pending access, two-member capacity, concurrent accepts, and RPC ACLs pass');
   await writeFile(join(root, 'result.json'), JSON.stringify({
     status: 'passed', completedAt: new Date().toISOString(), version,
-    migration: [migrationName, rlsMigrationName, pairingMigrationName],
-    sha256: createHash('sha256').update(migration + rlsMigration + pairingMigration).digest('hex'),
+    migration: [migrationName, rlsMigrationName, pairingMigrationName, calendarMigrationName, anniversaryMigrationName, annualMigrationName, journalMigrationName],
+    sha256: createHash('sha256').update(migration + rlsMigration + pairingMigration + calendarMigration + anniversaryMigration + annualMigration + journalMigration).digest('hex'),
     checks, smokeCounts: counts,
     scope: 'Isolated PostgreSQL with Supabase Auth stubs; RLS evaluated as authenticated role.',
   }, null, 2) + '\n');

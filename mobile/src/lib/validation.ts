@@ -38,12 +38,11 @@ export function isValidIsoDate(value: string) {
 
 export function daysUntil(value: string, repeatsYearly: boolean, now = new Date()) {
   const [year, month, day] = value.split('-').map(Number);
-  const next = new Date(year, month - 1, day);
+  let next = new Date(year, month - 1, day);
   if (repeatsYearly) {
-    next.setFullYear(now.getFullYear());
-    if (next < new Date(now.getFullYear(), now.getMonth(), now.getDate())) next.setFullYear(now.getFullYear() + 1);
+    next = new Date(now.getFullYear(), month - 1, day);
+    if (next < new Date(now.getFullYear(), now.getMonth(), now.getDate())) next = new Date(now.getFullYear() + 1, month - 1, day);
   }
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const date = new Date(next.getFullYear(), next.getMonth(), next.getDate());
-  return Math.max(0, Math.ceil((date.getTime() - today.getTime()) / 86400000));
+  return Math.max(0, Math.round((Date.UTC(next.getFullYear(), next.getMonth(), next.getDate())
+    - Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000));
 }

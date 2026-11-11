@@ -1,0 +1,2 @@
+[functions.dispatch-annual-reminders]
+verify_jwt = false
